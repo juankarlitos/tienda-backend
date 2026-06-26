@@ -1,0 +1,10 @@
+target/
+uploads/
+*.log
+.git/
+.idea/
+.vscode/
+.env
+.env.*
+HELP.md
+README.md
