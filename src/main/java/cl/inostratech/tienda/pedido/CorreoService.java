@@ -5,51 +5,62 @@ import cl.inostratech.tienda.model.ItemPedido;
 import cl.inostratech.tienda.model.Pedido;
 import cl.inostratech.tienda.pedido.dto.PedidoResponse;
 import cl.inostratech.tienda.repository.DatosTransferenciaRepository;
-import jakarta.mail.internet.MimeMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Notifica al vendedor el detalle de un pedido con un comprobante HTML
  * (titulo InostraTech, detalle, total destacado y datos de transferencia).
- * Si hay credenciales SMTP (MAIL_USERNAME y VENDEDOR_EMAIL) envia un correo
- * real; si no, imprime un comprobante legible en consola.
+ *
+ * El envio se hace por HTTP usando la API de Resend (https://api.resend.com),
+ * porque plataformas como Render bloquean el puerto SMTP (587). Si falta la
+ * RESEND_API_KEY o el correo del vendedor, solo imprime el comprobante en consola.
  */
 @Service
 public class CorreoService {
 
     private static final Logger log = LoggerFactory.getLogger(CorreoService.class);
     private static final DateTimeFormatter FECHA = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+    private static final String RESEND_URL = "https://api.resend.com/emails";
 
-    private final JavaMailSender mailSender;
     private final DatosTransferenciaRepository transferenciaRepository;
+    private final String resendApiKey;
     private final String remitente;
     private final String vendedorEmail;
+    private final RestClient restClient;
 
-    public CorreoService(JavaMailSender mailSender,
-                         DatosTransferenciaRepository transferenciaRepository,
-                         @Value("${spring.mail.username:}") String remitente,
+    public CorreoService(DatosTransferenciaRepository transferenciaRepository,
+                         @Value("${resend.api-key:}") String resendApiKey,
+                         @Value("${resend.from:onboarding@resend.dev}") String remitente,
                          @Value("${app.vendedor.email:}") String vendedorEmail) {
-        this.mailSender = mailSender;
         this.transferenciaRepository = transferenciaRepository;
+        this.resendApiKey = resendApiKey;
         this.remitente = remitente;
         this.vendedorEmail = vendedorEmail;
+
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(15_000);
+        this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
     private boolean estaCorreoConfigurado() {
-        return StringUtils.hasText(remitente) && StringUtils.hasText(vendedorEmail);
+        return StringUtils.hasText(resendApiKey) && StringUtils.hasText(vendedorEmail);
     }
 
     /**
@@ -64,26 +75,36 @@ public class CorreoService {
 
         if (!estaCorreoConfigurado()) {
             log.info("\n{}", comprobanteTexto(pedido, numero, transferencia));
-            log.info("Correo NO enviado: falta configurar SMTP (MAIL_USERNAME/MAIL_PASSWORD) " +
-                    "y/o VENDEDOR_EMAIL. El comprobante quedo listo arriba; conecta un App " +
-                    "Password de Gmail para enviarlo de verdad.");
+            log.info("Correo NO enviado: falta configurar RESEND_API_KEY y/o VENDEDOR_EMAIL. " +
+                    "El comprobante quedo listo arriba; define esas variables para enviarlo de verdad.");
             return;
         }
 
         try {
-            MimeMessage mensaje = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(mensaje, "UTF-8");
-            helper.setFrom(remitente);
-            helper.setTo(vendedorEmail);
-            helper.setSubject(asunto);
-            helper.setText(comprobanteHtml(pedido, numero, transferencia), true);
-            mailSender.send(mensaje);
-            log.info("Correo del pedido {} enviado a {}", numero, vendedorEmail);
+            enviarConResend(asunto, comprobanteHtml(pedido, numero, transferencia));
+            log.info("Correo del pedido {} enviado a {} via Resend", numero, vendedorEmail);
         } catch (Exception ex) {
             // El pedido NO debe perderse por un fallo de correo: se registra y sigue.
-            log.error("No se pudo enviar el correo del pedido {}: {}", numero, ex.getMessage());
+            log.error("No se pudo enviar el correo del pedido {} via Resend: {}", numero, ex.getMessage());
             log.info("\n{}", comprobanteTexto(pedido, numero, transferencia));
         }
+    }
+
+    /** Envia el correo HTML a traves de la API HTTP de Resend. */
+    private void enviarConResend(String asunto, String html) {
+        Map<String, Object> cuerpo = Map.of(
+                "from", remitente,
+                "to", List.of(vendedorEmail),
+                "subject", asunto,
+                "html", html);
+
+        restClient.post()
+                .uri(RESEND_URL)
+                .header("Authorization", "Bearer " + resendApiKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(cuerpo)
+                .retrieve()
+                .toBodilessEntity();
     }
 
     // ----------------------------------------------------------------------
