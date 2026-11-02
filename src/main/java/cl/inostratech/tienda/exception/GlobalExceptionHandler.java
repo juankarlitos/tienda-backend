@@ -2,6 +2,7 @@ package cl.inostratech.tienda.exception;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -41,6 +42,18 @@ public class GlobalExceptionHandler {
         Map<String, Object> cuerpo = base(HttpStatus.BAD_REQUEST, "Datos invalidos");
         cuerpo.put("errores", errores);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(cuerpo);
+    }
+
+    /** JSON mal formado o valor invalido (ej: enum inexistente) -> 400. */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> manejarCuerpoInvalido(HttpMessageNotReadableException ex) {
+        return construir(HttpStatus.BAD_REQUEST, "El cuerpo de la solicitud no es valido");
+    }
+
+    /** Limite de solicitudes por IP superado (anti-spam) -> 429. */
+    @ExceptionHandler(LimiteExcedidoException.class)
+    public ResponseEntity<Map<String, Object>> manejarLimite(LimiteExcedidoException ex) {
+        return construir(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage());
     }
 
     /** Credenciales/autenticacion fallida -> 401. */

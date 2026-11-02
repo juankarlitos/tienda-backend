@@ -1,11 +1,11 @@
 package cl.inostratech.tienda.security;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -16,11 +16,6 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
-import java.util.List;
 
 /**
  * Configuracion central de Spring Security:
@@ -28,7 +23,8 @@ import java.util.List;
  *   <li>Sesiones sin estado (stateless) porque la autenticacion es por JWT.</li>
  *   <li>Encriptacion de contrasenas con BCrypt.</li>
  *   <li>Reglas de acceso por ruta y rol.</li>
- *   <li>CORS habilitado para el dominio del frontend.</li>
+ *   <li>CORS habilitado para los dominios del frontend (bean definido en
+ *       config/WebConfig, acepta varias URLs separadas por coma).</li>
  *   <li>Filtro JWT antes del filtro de usuario/contrasena.</li>
  * </ul>
  */
@@ -39,9 +35,6 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final UsuarioDetailsService usuarioDetailsService;
 
-    @Value("${app.cors.allowed-origin}")
-    private String allowedOrigin;
-
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           UsuarioDetailsService usuarioDetailsService) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
@@ -51,7 +44,8 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                // Usa el bean "corsConfigurationSource" de config/WebConfig.
+                .cors(Customizer.withDefaults())
                 .csrf(AbstractHttpConfigurer::disable)
                 // Permite que la consola H2 se muestre en un frame (solo desarrollo).
                 .headers(headers -> headers.frameOptions(HeadersConfigurer.FrameOptionsConfig::sameOrigin))
@@ -72,6 +66,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/pago/transferencia").permitAll()
                         // Crear pedido es publico (checkout sin login).
                         .requestMatchers(HttpMethod.POST, "/api/pedidos").permitAll()
+                        // Landing de servicios: solicitar cotizacion y registrar
+                        // eventos de metricas son publicos (con limite por IP).
+                        .requestMatchers(HttpMethod.POST, "/api/cotizaciones").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/metricas/evento").permitAll()
                         // Administracion de productos (crear/editar/eliminar/subir imagen).
                         .requestMatchers(HttpMethod.POST, "/api/productos/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/api/productos/**").hasRole("ADMIN")
@@ -80,7 +78,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/pedidos/**").hasRole("ADMIN")
                         // Editar datos de transferencia: solo ADMIN.
                         .requestMatchers(HttpMethod.PUT, "/api/pago/**").hasRole("ADMIN")
-                        // Zona de administracion (dashboard).
+                        // Zona de administracion (dashboard, cotizaciones, metricas).
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         // Resto requiere autenticacion.
                         .anyRequest().authenticated())
@@ -107,18 +105,5 @@ public class SecurityConfig {
     public AuthenticationManager authenticationManager(AuthenticationConfiguration config)
             throws Exception {
         return config.getAuthenticationManager();
-    }
-
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(allowedOrigin));
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
-        config.setAllowCredentials(true);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
-        return source;
     }
 }
