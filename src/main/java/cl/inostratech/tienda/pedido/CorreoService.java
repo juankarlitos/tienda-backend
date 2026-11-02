@@ -1,5 +1,6 @@
 package cl.inostratech.tienda.pedido;
 
+import cl.inostratech.tienda.model.Cotizacion;
 import cl.inostratech.tienda.model.DatosTransferencia;
 import cl.inostratech.tienda.model.ItemPedido;
 import cl.inostratech.tienda.model.Pedido;
@@ -16,6 +17,8 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.time.format.DateTimeFormatter;
@@ -87,6 +90,34 @@ public class CorreoService {
             // El pedido NO debe perderse por un fallo de correo: se registra y sigue.
             log.error("No se pudo enviar el correo del pedido {} via Resend: {}", numero, ex.getMessage());
             log.info("\n{}", comprobanteTexto(pedido, numero, transferencia));
+        }
+    }
+
+    /**
+     * Envia (o imprime) al vendedor el aviso de una nueva cotizacion de la
+     * landing, con un link wa.me al telefono del cliente. Asincrono para no
+     * demorar la respuesta; si el envio falla solo se registra en el log.
+     */
+    @Async
+    public void notificarCotizacion(Cotizacion cotizacion) {
+        String asunto = "Nueva cotizacion #" + cotizacion.getId() + " - "
+                + cotizacion.getTipoServicio() + " - " + cotizacion.getNombre();
+        String linkWhatsapp = linkWhatsapp(cotizacion);
+
+        if (!estaCorreoConfigurado()) {
+            log.info("\n{}", cotizacionTexto(cotizacion, linkWhatsapp));
+            log.info("Correo de cotizacion NO enviado: falta configurar RESEND_API_KEY y/o VENDEDOR_EMAIL.");
+            return;
+        }
+
+        try {
+            enviarConResend(asunto, cotizacionHtml(cotizacion, linkWhatsapp));
+            log.info("Correo de la cotizacion {} enviado a {} via Resend", cotizacion.getId(), vendedorEmail);
+        } catch (Exception ex) {
+            // La cotizacion ya esta guardada: el fallo de correo solo se registra.
+            log.error("No se pudo enviar el correo de la cotizacion {} via Resend: {}",
+                    cotizacion.getId(), ex.getMessage());
+            log.info("\n{}", cotizacionTexto(cotizacion, linkWhatsapp));
         }
     }
 
@@ -253,6 +284,89 @@ public class CorreoService {
         }
         sb.append("================================================================");
         return sb.toString();
+    }
+
+    // ----------------------------------------------------------------------
+    // Aviso de cotizacion (landing de servicios)
+    // ----------------------------------------------------------------------
+    private String linkWhatsapp(Cotizacion c) {
+        String numero = c.getTelefono() == null ? "" : c.getTelefono().replaceAll("\\D", "");
+        if (numero.length() == 9) {
+            numero = "56" + numero;
+        }
+        String texto = "Hola " + c.getNombre() + ", te escribo de InostraTech por tu solicitud de cotización.";
+        return "https://wa.me/" + numero + "?text="
+                + URLEncoder.encode(texto, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private String cotizacionHtml(Cotizacion c, String linkWhatsapp) {
+        return """
+                <div style="font-family:Arial,Helvetica,sans-serif;background:#f3f4f6;padding:24px;">
+                  <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,.08);">
+                    <div style="background:linear-gradient(135deg,#7c3aed,#4f46e5);padding:24px;color:#fff;">
+                      <h1 style="margin:0;font-size:22px;">InostraTech</h1>
+                      <p style="margin:4px 0 0;opacity:.9;">Nueva solicitud de cotización</p>
+                    </div>
+                    <div style="padding:24px;">
+                      <p style="margin:0 0 4px;color:#111;font-size:16px;">Cotización <strong>#%d</strong> · <strong>%s</strong></p>
+                      <p style="margin:0 0 16px;color:#777;font-size:13px;">Fecha: %s</p>
+
+                      <div style="padding:16px;background:#f9fafb;border:1px solid #eee;border-radius:10px;">
+                        <h3 style="margin:0 0 10px;font-size:15px;color:#111;">Datos del cliente</h3>
+                        <p style="margin:2px 0;color:#333;font-size:14px;"><strong>Nombre:</strong> %s</p>
+                        <p style="margin:2px 0;color:#333;font-size:14px;"><strong>Teléfono:</strong> %s</p>
+                        <p style="margin:2px 0;color:#333;font-size:14px;"><strong>Email:</strong> %s</p>
+                      </div>
+
+                      <div style="margin-top:16px;padding:16px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;">
+                        <h3 style="margin:0 0 10px;color:#4338ca;font-size:15px;">Mensaje</h3>
+                        <p style="margin:0;color:#333;font-size:14px;white-space:pre-wrap;">%s</p>
+                      </div>
+
+                      <div style="margin-top:20px;text-align:center;">
+                        <a href="%s" style="display:inline-block;padding:12px 22px;background:#25d366;color:#fff;text-decoration:none;border-radius:999px;font-weight:700;">
+                          Responder por WhatsApp
+                        </a>
+                      </div>
+
+                      <p style="margin:22px 0 0;color:#999;font-size:12px;text-align:center;">
+                        Este correo fue generado automáticamente por la landing de InostraTech.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                """.formatted(
+                c.getId(),
+                c.getTipoServicio(),
+                c.getFechaCreacion() != null ? c.getFechaCreacion().format(FECHA) : "-",
+                escapar(c.getNombre()),
+                escapar(c.getTelefono()),
+                StringUtils.hasText(c.getEmail()) ? escapar(c.getEmail()) : "-",
+                escapar(c.getMensaje()),
+                linkWhatsapp);
+    }
+
+    private String cotizacionTexto(Cotizacion c, String linkWhatsapp) {
+        return """
+                ===================== NUEVA COTIZACION =====================
+                Cotizacion: #%d
+                Fecha:      %s
+                Servicio:   %s
+                Nombre:     %s
+                Telefono:   %s
+                Email:      %s
+                WhatsApp:   %s
+                Mensaje:
+                %s
+                ============================================================""".formatted(
+                c.getId(),
+                c.getFechaCreacion() != null ? c.getFechaCreacion().format(FECHA) : "-",
+                c.getTipoServicio(),
+                c.getNombre(),
+                c.getTelefono(),
+                valor(c.getEmail()),
+                linkWhatsapp,
+                c.getMensaje());
     }
 
     // ----------------------------------------------------------------------

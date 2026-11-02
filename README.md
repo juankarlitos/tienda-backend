@@ -56,7 +56,8 @@ Ver [`.env.example`](.env.example). Resumen:
 |---|---|
 | `DATABASE_URL`, `DB_USERNAME`, `DB_PASSWORD` | PostgreSQL/Neon (si se omite, usa H2) |
 | `JWT_SECRET` | Firma de los JWT (>= 32 caracteres) |
-| `CORS_ALLOWED_ORIGIN` | URL del frontend (Vercel) |
+| `CORS_ALLOWED_ORIGIN` | URL(s) del frontend (Vercel), varias separadas por coma |
+| `LIMITE_COTIZACIONES_POR_HORA`, `LIMITE_METRICAS_POR_HORA` | Límite anti-spam por IP de la landing (opcional; 5 y 60) |
 | `MAIL_USERNAME`, `MAIL_PASSWORD` | Gmail + App Password para enviar correos |
 | `VENDEDOR_EMAIL`, `VENDEDOR_WHATSAPP` | Datos del vendedor |
 | `CLOUDINARY_URL` | Cloudinary (opcional) |
@@ -91,3 +92,44 @@ El repo incluye un **`Dockerfile`** (recomendado, fija Java 21). En Render:
 - `POST /api/pedidos` (público) · `GET /api/pedidos`, `PUT /api/pedidos/{id}/estado` (ADMIN)
 - `GET /api/pago/transferencia` (público) · `PUT` (ADMIN)
 - `GET /api/admin/dashboard` (ADMIN) · `GET /api/config` (público)
+
+### Landing de servicios (cotizaciones y métricas)
+
+**`POST /api/cotizaciones`** (público) — solicitar cotización.
+```json
+{
+  "nombre": "María Pérez",
+  "telefono": "+56912345678",
+  "email": "maria@ejemplo.cl",
+  "tipoServicio": "PAGINA_NEGOCIO",
+  "mensaje": "Necesito una página para mi negocio de repostería.",
+  "website": ""
+}
+```
+- `nombre`: 2–60 caracteres, solo letras, espacios, tildes y ñ.
+- `telefono`: `+569XXXXXXXX` o `9XXXXXXXX` (se guarda como `+569XXXXXXXX`).
+- `email`: opcional, debe ser válido si viene.
+- `tipoServicio`: `NEGOCIO_GOOGLE`, `PAGINA_NEGOCIO`, `TIENDA_ONLINE`, `SISTEMA_MEDIDA`, `CLASES_PROGRAMACION`, `OTRO`.
+- `mensaje`: 10–1000 caracteres.
+- `website`: honeypot; debe ir vacío (oculto en el formulario). Si trae valor se responde 201 pero no se guarda.
+- Respuestas: `201 {"mensaje": "..."}` · `400` validación (detalle en `errores`) · `429` más de 5 solicitudes/hora por IP.
+- Se envía un aviso por correo (Resend) a `VENDEDOR_EMAIL` con los datos y un link `wa.me` al cliente. Si el correo falla, la cotización igual se guarda.
+
+**`GET /api/admin/cotizaciones?estado=NUEVA&page=0&size=20`** (ADMIN) — lista paginada, más recientes primero.
+`estado` es opcional (`NUEVA`, `CONTACTADA`, `CERRADA`, `DESCARTADA`); `size` máximo 100.
+Respuesta: `{ contenido: [...], pagina, tamano, totalElementos, totalPaginas }`.
+
+**`PATCH /api/admin/cotizaciones/{id}/estado`** (ADMIN) — body `{"estado": "CONTACTADA"}`. `404` si no existe.
+
+**`POST /api/metricas/evento`** (público) — body `{"tipo": "VISITA"}` (`VISITA`, `CLICK_WHATSAPP`, `CLICK_PRECIOS`).
+Responde `201` sin cuerpo; `429` si se superan 60 eventos/hora por IP.
+
+**`GET /api/admin/metricas/resumen`** (ADMIN) — totales por tipo:
+```json
+{ "ultimos7Dias":  { "VISITA": 120, "CLICK_WHATSAPP": 14, "CLICK_PRECIOS": 30 },
+  "ultimos30Dias": { "VISITA": 480, "CLICK_WHATSAPP": 52, "CLICK_PRECIOS": 101 } }
+```
+
+> La IP para el límite se toma de la última entrada de `X-Forwarded-For` (la agrega el
+> proxy de Render) o de la conexión si no viene. Los contadores viven en memoria: se
+> reinician al reiniciar la app y no se comparten entre varias instancias.
